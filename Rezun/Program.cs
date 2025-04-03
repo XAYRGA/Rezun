@@ -1,7 +1,12 @@
 ﻿using System;
 using System.IO;
 using System.Text;
-using Ionic.Zlib;
+
+using xayrga.byteglider;
+using xayrga.console;
+using xayrga.console;
+using System.IO.Compression;
+
 //using System.IO.Compression;
 namespace Rezun
 {
@@ -29,112 +34,97 @@ namespace Rezun
         static void Main(string[] args)
         {
 
-            var inFile = File.OpenRead(args[0]);
-            var fileReader = new BinaryReader(inFile);
-
-            fileReader.ReadInt32(); // Skip first 4 bytes 0 
-            var fileCount = fileReader.ReadInt32();
-            var stringTableSize = fileReader.ReadInt32();
-            var stringTableOffset = (fileCount * 0x10) + 0x10;
-            var dataBlockOffset = 0x10 + (fileCount * 0x10) + stringTableSize;
-            fileReader.ReadInt32(); // 0  
-
-            var anchor = 0x10; // File entries start at 0x10; 
-
-            for (int i = 0; i < fileCount; i++)
+            Console.WriteLine("Rezun - Rez Infinite File Extractor\nCreated by Xayrga!\nhttps://ko-fi.com/xayrga/");
+            
+#if DEBUG
+            ConsoleAppHelper.ArgumentList = new string[]
             {
-                var fileEntryOffset = fileReader.ReadInt32();
-                var fileEntrySTOffset = fileReader.ReadInt32();
-                var fileDataLength = fileReader.ReadInt32();
-                var fileUNK1 = fileReader.ReadInt16();
-                var fileUNK2 = fileReader.ReadInt16();
+                @"E:\STEAMSLOW\steamapps\common\Rez Infinite\REZ\DATA\RezVR_snd3.bnk"
+            };
+#else 
+            ConsoleAppHelper.ArgumentList = args;  
+#endif
+            var inFile = ConsoleAppHelper.assertArg(0, "Input File");
 
-                var FTOAnchor = fileReader.BaseStream.Position;
+            ConsoleAppHelper.assert(File.Exists(inFile),$"{inFile} not found.");
+            var outFolder = ConsoleAppHelper.tryArg(1, "Output Folder");
 
-                fileReader.BaseStream.Position = stringTableOffset + fileEntrySTOffset;
-                var fileName = readCString(fileReader);
+            if (outFolder==null)
+                outFolder = $"{Path.GetFileNameWithoutExtension(inFile)}_out";
 
-                fileReader.BaseStream.Position = dataBlockOffset + fileEntryOffset;
-                var fileData = fileReader.ReadBytes(fileDataLength);
-                var binString = Convert.ToString(fileUNK1, 2);
-                var binString2 = Convert.ToString(fileUNK1, 2);
-                var decompData = new byte[0];
-                var fail = false;
-                if (fileUNK1==0 & fileUNK2==0)
-                {
-                    decompData = fileData;
-                    File.WriteAllBytes($"out/{fileName.Substring(0, fileName.Length )}", decompData);
-                    Console.WriteLine($"Extraction success: {fileName} 0x{fileUNK1:X} 0x{fileUNK2:X}\t\t\t0b{binString}\t0b{binString2}");
-                    fileReader.BaseStream.Position = FTOAnchor;
-                    continue;
-                }
-          
+            Console.WriteLine($"Output folder: {outFolder}");
+
+            Directory.CreateDirectory(outFolder);
+
+            var inStream = File.OpenRead(inFile);
+            var reader = new bgReader(inStream);
+
+            var datFile = RezDataFile.createFromStream(reader);
+
+            for (int i = 0; i < datFile.Entries.Count; i++) {
+                var nFile = datFile.Entries[i];
+                var fileName = Path.GetFileNameWithoutExtension(nFile.Name);
+                
+
+                Console.Write($"Extracting {nFile.Name} ... ");
+                File.WriteAllBytes($"{outFolder}/{fileName}.raw", nFile.Data);
                 try
-                {
-                    decompData = inflate(fileData);
+                {                                 
+                    var outData = nFile.Data;                   
+
+                    if (nFile.Flags!=0x0000000) 
+                        outData = inflate(nFile.Data);
+               
+                    var Ext = Path.GetExtension(nFile.Name);           
+                    if (Ext==".zip")
+                        Ext = getExtensionFromMagic(outData);
+
+
+
+                    File.WriteAllBytes($"{outFolder}/{fileName}{Ext}", outData);
+                    Console.ForegroundColor = ConsoleColor.Green;
+                    Console.Write("OK");
+                    Console.ForegroundColor = ConsoleColor.Gray;
+                    Console.Write($" ({Ext})");
+
                 } catch (Exception E)
                 {
-                    Console.WriteLine($"Extraction failure: {fileName} 0x{fileUNK1:X} 0x{fileUNK2:X}\t\t\t0b{binString}\t0b{binString2}");
-                    decompData = fileData;
-                    fail = true;
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.Write("FAIL");
+                    Console.ForegroundColor = ConsoleColor.Gray;
                 }
-                File.WriteAllBytes($"out/{fileName.Substring(0,fileName.Length - 4)}", decompData);
-           
-                if (!fail)
-                {
-                    Console.WriteLine($"Extraction success: {fileName} 0x{fileUNK1:X} 0x{fileUNK2:X}\t\t\t0b{binString}\t0b{binString2}");
-                }
-                fileReader.BaseStream.Position = FTOAnchor;
+                Console.WriteLine();
             }
-
         }
 
-        public static string readCString(BinaryReader aafRead)
+
+        public static string getExtensionFromMagic(byte[] data)
         {
-            var ofs = aafRead.BaseStream.Position;
-            byte nextbyte;
-            byte[] name = new byte[0xFF];
 
-            int count = 0;
-            while ((nextbyte = aafRead.ReadByte()) != 0x00)
-            {
-                name[count] = nextbyte;
-                count++;
+            using (var ms =  new MemoryStream(data))
+            using (var br = new bgReader(ms)) {
+                var fourcc = br.ReadInt32();
+
+                switch (fourcc)
+                {
+                    case 0x20534444:
+                        return ".dds";
+                    case 0x46464952:
+                        return ".wav";
+                    default:
+                        return ".dat";
+                }
+                
             }
-            return Encoding.ASCII.GetString(name, 0, count);
         }
-
 
         public static byte[] inflate(byte[] data)
         {
-
-
-            const int size = 65535;
-            int current_size = 0;
-
-            using (ZlibStream stream = new ZlibStream(new MemoryStream(data), CompressionMode.Decompress))
-            {
-                
-
-                byte[] buffer = new byte[size];
-                using (MemoryStream memory = new MemoryStream())
-                {
-                    int count = 0;
-                    do
-                    {
-                        count = stream.Read(buffer, 0, size);
-                        //Console.WriteLine("GZ: {0}", count);
-                        current_size += count;
-                        if (count > 0)
-                        {
-                            memory.Write(buffer, 0, count);
-
-                        }
-                    }
-                    while (count > 0);
-                    return memory.ToArray();
-                }
-            }
+            var w = new MemoryStream(data);
+            var outStream = new MemoryStream();
+            var zlib = new ZLibStream(w, CompressionMode.Decompress);
+            zlib.CopyTo(outStream);
+            return outStream.ToArray();
         }
     }
 }
